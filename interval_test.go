@@ -1,9 +1,7 @@
 package interval
 
 import (
-	"fmt"
 	"math/rand"
-	"sort"
 	"testing"
 )
 
@@ -16,37 +14,22 @@ func randrange(max int) (int, int) {
 	return low, high
 }
 
-func check(a, b []Value, t *testing.T) {
-	ai := make([]int, len(a))
-	bi := make([]int, len(b))
-	for i := range a {
-		ai[i] = a[i].(int)
-	}
-	for i := range b {
-		bi[i] = b[i].(int)
-	}
-
-	sort.Slice(ai, func(i, j int) bool {
-		return ai[i] < ai[j]
-	})
-	sort.Slice(bi, func(i, j int) bool {
-		return bi[i] < bi[j]
-	})
-	if len(a) != len(b) {
-		t.Errorf("different len: %d vs %d", len(a), len(b))
-		fmt.Println(ai)
-		fmt.Println(bi)
-		return
-	}
-	for i := range ai {
-		if ai[i] != bi[i] {
-			t.Errorf("error:\n%v\n%v", ai, bi)
-		}
-	}
-}
-
 func randint(min, max int) int {
 	return rand.Intn(max-min) + min
+}
+
+func checkParents(n *node, t *testing.T) {
+	if n == nil {
+		return
+	}
+	if n.left != nil && n.left.parent != n {
+		t.Fatalf("Incorrect parent n: %p, n.left.parent: %p", n, n.left.parent)
+	}
+	if n.right != nil && n.right.parent != n {
+		t.Fatalf("Incorrect parent n: %p, n.right.parent: %p", n, n.right.parent)
+	}
+	checkParents(n.left, t)
+	checkParents(n.right, t)
 }
 
 func TestTree(t *testing.T) {
@@ -57,21 +40,28 @@ func TestTree(t *testing.T) {
 		opAdd = iota
 		opFind
 		opRemoveAndShift
+		opPos
 
-		nops     = 50000
+		nops     = 3000
 		maxidx   = 100000
 		maxid    = 10
 		maxshamt = 50
 	)
 
+	var pt, pa Pos
+	var length int
+	var haspt bool
+
 	for i := 0; i < nops; i++ {
-		op := rand.Intn(3)
+		op := rand.Intn(4)
 		switch op {
 		case opAdd:
 			id := rand.Intn(maxid)
 			low, high := randrange(maxidx)
-			it.Add(id, low, high, i)
-			ia.Add(id, low, high, i)
+			pt = it.Add(id, low, high, i)
+			pa = ia.Add(id, low, high, i)
+			length = high - low
+			haspt = true
 		case opFind:
 			id := rand.Intn(maxid)
 			pos := rand.Intn(maxidx)
@@ -94,8 +84,26 @@ func TestTree(t *testing.T) {
 			low, high := randrange(maxidx)
 			amt := randint(-maxshamt, maxshamt)
 
+			if haspt {
+				ptpos := pt.Pos()
+				if Overlaps(Interval{
+					Low:  low,
+					High: high,
+				}, Interval{
+					Low:  ptpos,
+					High: ptpos + length,
+				}) {
+					haspt = false
+				}
+			}
+
 			it.RemoveAndShift(low, high, amt)
 			ia.RemoveAndShift(low, high, amt)
+		case opPos:
+			if haspt && pt.Pos() != pa.Pos() {
+				t.Fatalf("%d != %d", pt.Pos(), pa.Pos())
+			}
 		}
+		checkParents(it.root, t)
 	}
 }

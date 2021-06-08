@@ -8,8 +8,12 @@ type Array struct {
 }
 
 type slot struct {
-	ivalue
+	*ivalue
 	id int
+}
+
+func (iv *ivalue) Pos() int {
+	return iv.interval.Low
 }
 
 func (a *Array) FindLargest(id, pos int) Value {
@@ -28,14 +32,16 @@ func (a *Array) FindLargest(id, pos int) Value {
 	return a.slots[maxi].value
 }
 
-func (a *Array) Add(id, low, high int, val Value) {
+func (a *Array) Add(id, low, high int, val Value) Pos {
+	iv := &ivalue{
+		interval: Interval{low, high},
+		value:    val,
+	}
 	a.slots = append(a.slots, slot{
-		id: id,
-		ivalue: ivalue{
-			interval: Interval{low, high},
-			value:    val,
-		},
+		id:     id,
+		ivalue: iv,
 	})
+	return iv
 }
 
 func (a *Array) RemoveAndShift(low, high, amt int) {

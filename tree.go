@@ -27,31 +27,32 @@ type Tree struct {
 
 // Adds the given interval to the tree. An id can also be given to the interval
 // to separate different types of intervals.
-func (t *Tree) Add(id, low, high int, val Value) {
-	t.root = t.root.add(key{id, low}, high, val)
+func (t *Tree) Add(id, low, high int, val Value) (pos Pos) {
+	t.root, pos = t.root.add(key{id, low}, high, val, nil)
+	return pos
 }
 
 // FindLargest returns the largest interval associated with (id, pos).
 func (t *Tree) FindLargest(id, pos int) Value {
 	n := t.root.search(key{id, pos})
-	if n == nil || len(n.iv) == 0 {
+	if n == nil || len(n.iv.ivs) == 0 {
 		return nil
 	}
 
 	var max, maxi int
-	for i := range n.iv {
-		if n.iv[i].interval.High > max {
-			max = n.iv[i].interval.High
+	for i := range n.iv.ivs {
+		if n.iv.ivs[i].interval.High > max {
+			max = n.iv.ivs[i].interval.High
 			maxi = i
 		}
 	}
-	return n.iv[maxi].value
+	return n.iv.ivs[maxi].value
 }
 
 // RemoveAndShift removes all entries that overlap with [low, high) and then shifts
 // all entries greater than low by amt.
 func (t *Tree) RemoveAndShift(low, high, amt int) {
-	t.root = t.root.removeOverlaps(low, high)
+	t.root = t.root.removeOverlaps(low, high, t.root)
 	if amt != 0 {
 		t.root.addShift(shift{low, amt})
 	}
@@ -60,6 +61,16 @@ func (t *Tree) RemoveAndShift(low, high, amt int) {
 // Size returns the number of intervals in the tree.
 func (t *Tree) Size() int {
 	return t.root.getSize()
+}
+
+type ivalues struct {
+	ivs  []ivalue
+	node *node
+}
+
+func (iv *ivalues) Pos() int {
+	iv.node.applyAllShifts()
+	return iv.node.key.pos
 }
 
 type ivalue struct {
@@ -78,13 +89,14 @@ type shift struct {
 type node struct {
 	key    key
 	max    int
-	iv     []ivalue
+	iv     *ivalues
 	shifts []shift
 
 	// height counts nodes (not edges)
 	height int
 	left   *node
 	right  *node
+	parent *node
 }
 
 func (n *node) addShift(sh shift) {
@@ -103,8 +115,8 @@ func (n *node) applyShifts() {
 		if n.max >= sh.idx {
 			if n.key.pos >= sh.idx {
 				n.key.pos += sh.amt
-				for i, iv := range n.iv {
-					n.iv[i].interval = iv.interval.Shift(sh.amt)
+				for i, iv := range n.iv.ivs {
+					n.iv.ivs[i].interval = iv.interval.Shift(sh.amt)
 				}
 			}
 			n.max += sh.amt
@@ -117,39 +129,47 @@ func (n *node) applyShifts() {
 	n.shifts = nil
 }
 
-func (n *node) add(key key, high int, value Value) *node {
+func (n *node) add(key key, high int, value Value, parent *node) (*node, *ivalues) {
 	if n == nil {
-		return &node{
+		n = new(node)
+		*n = node{
 			key: key,
 			max: high,
-			iv: []ivalue{ivalue{
-				interval: Interval{key.pos, high},
-				value:    value,
-			}},
+			iv: &ivalues{
+				ivs: []ivalue{ivalue{
+					interval: Interval{key.pos, high},
+					value:    value,
+				}},
+				node: n,
+			},
 			height: 1,
 			left:   nil,
 			right:  nil,
+			parent: parent,
 		}
+		return n, n.iv
 	}
 	n.applyShifts()
 
+	var iv *ivalues
 	if key.compare(n.key) < 0 {
-		n.left = n.left.add(key, high, value)
+		n.left, iv = n.left.add(key, high, value, n)
 	} else if key.compare(n.key) > 0 {
-		n.right = n.right.add(key, high, value)
+		n.right, iv = n.right.add(key, high, value, n)
 	} else {
 		// if same key exists update value
-		n.iv = append(n.iv, ivalue{
+		n.iv.ivs = append(n.iv.ivs, ivalue{
 			interval: Interval{key.pos, high},
 			value:    value,
 		})
+		iv = n.iv
 	}
-	return n.rebalanceTree()
+	return n.rebalanceTree(parent), iv
 }
 
 func (n *node) calcMax() int {
 	max := 0
-	for _, iv := range n.iv {
+	for _, iv := range n.iv.ivs {
 		if iv.interval.High > max {
 			max = iv.interval.High
 		}
@@ -169,15 +189,15 @@ func (n *node) updateMax() {
 	}
 }
 
-func (n *node) remove(key key) *node {
+func (n *node) remove(key key, parent *node) *node {
 	if n == nil {
 		return nil
 	}
 	n.applyShifts()
 	if key.compare(n.key) < 0 {
-		n.left = n.left.remove(key)
+		n.left = n.left.remove(key, n)
 	} else if key.compare(n.key) > 0 {
-		n.right = n.right.remove(key)
+		n.right = n.right.remove(key, n)
 	} else {
 		if n.left != nil && n.right != nil {
 			n.left.applyShifts()
@@ -186,10 +206,12 @@ func (n *node) remove(key key) *node {
 			// replace values with smallest node of the right sub-tree
 			rightMinNode := n.right.findSmallest()
 			n.key = rightMinNode.key
+			// n.iv.node = nil
 			n.iv = rightMinNode.iv
+			n.iv.node = n
 			n.shifts = rightMinNode.shifts
 			// delete smallest node that we replaced
-			n.right = n.right.remove(rightMinNode.key)
+			n.right = n.right.remove(rightMinNode.key, n)
 		} else if n.left != nil {
 			n.left.applyShifts()
 			// node only has left child
@@ -205,7 +227,8 @@ func (n *node) remove(key key) *node {
 		}
 
 	}
-	return n.rebalanceTree()
+	n.parent = parent
+	return n.rebalanceTree(parent)
 }
 
 func (n *node) search(key key) *node {
@@ -235,7 +258,7 @@ func (n *node) overlaps(low, high int, result []Value) []Value {
 
 	result = n.left.overlaps(low, high, result)
 
-	for _, iv := range n.iv {
+	for _, iv := range n.iv.ivs {
 		if Overlaps(iv.interval, Interval{low, high}) {
 			result = append(result, iv.value)
 		}
@@ -249,7 +272,7 @@ func (n *node) overlaps(low, high int, result []Value) []Value {
 	return result
 }
 
-func (n *node) removeOverlaps(low, high int) *node {
+func (n *node) removeOverlaps(low, high int, parent *node) *node {
 	if n == nil {
 		return n
 	}
@@ -260,22 +283,22 @@ func (n *node) removeOverlaps(low, high int) *node {
 		return n
 	}
 
-	n.left = n.left.removeOverlaps(low, high)
+	n.left = n.left.removeOverlaps(low, high, n)
 
-	for i := 0; i < len(n.iv); {
-		if Overlaps(n.iv[i].interval, Interval{low, high}) {
-			n.iv[i] = n.iv[len(n.iv)-1]
-			n.iv = n.iv[:len(n.iv)-1]
+	for i := 0; i < len(n.iv.ivs); {
+		if Overlaps(n.iv.ivs[i].interval, Interval{low, high}) {
+			n.iv.ivs[i] = n.iv.ivs[len(n.iv.ivs)-1]
+			n.iv.ivs = n.iv.ivs[:len(n.iv.ivs)-1]
 		} else {
 			i++
 		}
 	}
 
-	if len(n.iv) == 0 {
+	if len(n.iv.ivs) == 0 {
 		doright := high > n.key.pos
-		n = n.remove(n.key)
+		n = n.remove(n.key, parent)
 		if doright {
-			return n.removeOverlaps(low, high)
+			return n.removeOverlaps(low, high, parent)
 		}
 		return n
 	}
@@ -284,7 +307,7 @@ func (n *node) removeOverlaps(low, high int) *node {
 		return n
 	}
 
-	n.right = n.right.removeOverlaps(low, high)
+	n.right = n.right.removeOverlaps(low, high, n)
 	return n
 }
 
@@ -308,7 +331,7 @@ func (n *node) updateHeightAndMax() {
 }
 
 // Checks if node is balanced and rebalance
-func (n *node) rebalanceTree() *node {
+func (n *node) rebalanceTree(parent *node) *node {
 	if n == nil {
 		return n
 	}
@@ -319,21 +342,21 @@ func (n *node) rebalanceTree() *node {
 	if balanceFactor == -2 {
 		// check if child is left-heavy and rotateRight first
 		if n.right.left.getHeight() > n.right.right.getHeight() {
-			n.right = n.right.rotateRight()
+			n.right = n.right.rotateRight(n)
 		}
-		return n.rotateLeft()
+		return n.rotateLeft(parent)
 	} else if balanceFactor == 2 {
 		// check if child is right-heavy and rotateLeft first
 		if n.left.right.getHeight() > n.left.left.getHeight() {
-			n.left = n.left.rotateLeft()
+			n.left = n.left.rotateLeft(n)
 		}
-		return n.rotateRight()
+		return n.rotateRight(parent)
 	}
 	return n
 }
 
 // Rotate nodes left to balance node
-func (n *node) rotateLeft() *node {
+func (n *node) rotateLeft(newParent *node) *node {
 	n.applyShifts()
 	if n.right != nil {
 		n.right.applyShifts()
@@ -343,13 +366,21 @@ func (n *node) rotateLeft() *node {
 	n.right = newRoot.left
 	newRoot.left = n
 
+	n.parent = newRoot
+
+	if n.right != nil {
+		n.right.parent = n
+	}
+
+	newRoot.parent = newParent
+
 	n.updateHeightAndMax()
 	newRoot.updateHeightAndMax()
 	return newRoot
 }
 
 // Rotate nodes right to balance node
-func (n *node) rotateRight() *node {
+func (n *node) rotateRight(newParent *node) *node {
 	n.applyShifts()
 	if n.left != nil {
 		n.left.applyShifts()
@@ -357,6 +388,14 @@ func (n *node) rotateRight() *node {
 	newRoot := n.left
 	n.left = newRoot.right
 	newRoot.right = n
+
+	n.parent = newRoot
+
+	if n.left != nil {
+		n.left.parent = n
+	}
+
+	newRoot.parent = newParent
 
 	n.updateHeightAndMax()
 	newRoot.updateHeightAndMax()
@@ -371,6 +410,13 @@ func (n *node) findSmallest() *node {
 	} else {
 		return n
 	}
+}
+
+func (n *node) applyAllShifts() {
+	if n.parent != nil && n.parent != n {
+		n.parent.applyAllShifts()
+	}
+	n.applyShifts()
 }
 
 func max(a int, b int) int {
